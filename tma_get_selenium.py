@@ -18,18 +18,11 @@ except KeyError:
 # Initialise le driver Selenium
 print("Initialisation du driver Chrome...")
 options = webdriver.ChromeOptions()
-options.add_argument('headless')
+#options.add_argument('headless')
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 driver.set_window_size(1920, 1080)
 
 DASHBOARD_URL = f'{BASE_TMA_URL}/dashboard'
-
-list_response = requests.get(f'{BASE_TMA_URL}/spaces/list', cookies={'diedm_session': SESSION_COOKIE})
-
-spaces = []
-for space in list_response.json()['spaces']:
-    print(f"UUID: {space['uuid']}, Nom de l'espace : {space['display_name']}, Année : {space['display_years']}")
-    spaces.append({'name': space['display_name'], 'uuid': space['uuid']})
 
 try:
 
@@ -38,6 +31,12 @@ try:
     driver.add_cookie({'name': 'diedm_session', 'value': SESSION_COOKIE})
     driver.get(DASHBOARD_URL)  # Recharge la page pour appliquer les cookies
     time.sleep(5)
+
+    list_response = requests.get(f'{BASE_TMA_URL}/spaces/list', cookies={'diedm_session': SESSION_COOKIE})
+    spaces = []
+    for space in list_response.json()['spaces']:
+        print(f"UUID: {space['uuid']}, Nom de l'espace : {space['display_name']}, Année : {space['display_years']}")
+        spaces.append({'name': space['display_name'], 'uuid': space['uuid']})
 
     for space in spaces:
         url = f"{BASE_TMA_URL}/journal/{space['uuid']}"
@@ -54,6 +53,14 @@ try:
         # Attendre que la page soit complètement chargée
         time.sleep(5)
 
+        # Scroller jusqu'en bas de la page pour charger tous les articles
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+        # Scroller jusqu'en haut de la page pour s'assurer que tous les articles sont visibles
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(2)
+        print("Recherche des articles contenant des galeries")
+
         # Trouver tous les articles contenant un bouton avec la classe 'gallery-trigger'
         articles = driver.find_elements(By.CSS_SELECTOR, "article.reactor-post:has(button.gallery-trigger)")
 
@@ -62,13 +69,14 @@ try:
             # Trouver le titre h2 dans l'article
             h2 = article.find_element(By.CSS_SELECTOR, "h2.title")
             title_text = h2.text
+            date = article.find_element(By.CSS_SELECTOR, "div.day").text + " " + article.find_element(By.CSS_SELECTOR, "div.month").text
 
             # Trouver le bouton gallery-trigger dans l'article
             button = article.find_element(By.CSS_SELECTOR, "button.gallery-trigger")
 
             # Afficher le texte du titre et l'élément bouton
             print("Processing gallery:", title_text)
-            article_folder_path = os.path.join(save_folder_path, title_text)
+            article_folder_path = os.path.join(save_folder_path, f"{date}_{title_text}")
             os.makedirs(article_folder_path, exist_ok=True)
             print(f"Les images seront sauvegardées dans : {article_folder_path}")
 
@@ -79,7 +87,7 @@ try:
                 time.sleep(2)  # Attendre que le carrousel s'ouvre
 
                 # Trouver toutes les images dans le carrousel
-                images = driver.find_elements(By.CSS_SELECTOR, 'img')
+                images = driver.find_elements(By.XPATH, '//div[contains(@class, lg-thumb-outer)]//img')
                 print(f"Nombre d'images trouvées : {len(images)}")
                 for img in images:
                     img_url = img.get_attribute('src')
