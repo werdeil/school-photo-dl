@@ -1,11 +1,12 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.common.by import By
 import os
 import re
-import requests
 import time
+
+import requests
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Configuration
 BASE_DOWNLOAD_DIR = os.path.expanduser('~/Documents/TMA')
@@ -32,7 +33,7 @@ try:
     driver.get(DASHBOARD_URL)  # Recharge la page pour appliquer les cookies
     time.sleep(5)
 
-    list_response = requests.get(f'{BASE_TMA_URL}/spaces/list', cookies={'diedm_session': SESSION_COOKIE})
+    list_response = requests.get(f'{BASE_TMA_URL}/spaces/list', cookies={'diedm_session': SESSION_COOKIE}, timeout=10)
     spaces = []
     for space in list_response.json()['spaces']:
         print(f"UUID: {space['uuid']}, Nom de l'espace : {space['display_name']}, Année : {space['display_years']}")
@@ -55,9 +56,9 @@ try:
 
         articles = driver.find_elements(By.CSS_SELECTOR, "article.reactor-post:has(button.gallery-trigger)")
         print(f"Nombre d'articles trouvés : {len(articles)}")
-        prev_count = 0
-        while len(articles) > prev_count:
-            prev_count = len(articles)
+        PREV_COUNT = 0
+        while len(articles) > PREV_COUNT:
+            PREV_COUNT = len(articles)
             # Scroller jusqu'en bas de la page pour charger tous les articles
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
@@ -78,7 +79,7 @@ try:
 
             # Afficher le texte du titre et l'élément bouton
             print("Processing gallery:", title_text)
-            article_folder_path = os.path.join(save_folder_path, f"{date}_{title_text}")
+            article_folder_path = os.path.join(save_folder_path, f"{date} - {title_text}")
             os.makedirs(article_folder_path, exist_ok=True)
             print(f"Les images seront sauvegardées dans : {article_folder_path}")
 
@@ -89,7 +90,6 @@ try:
                 time.sleep(2)  # Attendre que le carrousel s'ouvre
 
                 # Trouver toutes les images dans le carrousel
-                # images = driver.find_elements(By.XPATH, '//div[contains(@class, lg-thumb-outer)]//img')
                 images = driver.find_elements(By.XPATH, '//*[@id="lg-container-1"]//img')
                 if len(images) == 26:
                     print("Carrousel avec 25 images, on va essayer de charger plus d'images...")
@@ -111,7 +111,7 @@ try:
                         try:
                             # Nettoie l'URL pour enlever les paramètres de requête
                             clean_img_url = re.sub(r'\?.*$', '', hd_img_url)
-                            img_data = requests.get(clean_img_url).content
+                            img_data = requests.get(clean_img_url, timeout=10).content
                             img_name = os.path.basename(clean_img_url)
                             img_path = os.path.join(article_folder_path, img_name)
                             with open(img_path, 'wb') as img_file:
@@ -133,4 +133,4 @@ finally:
     print("\nNettoyage et fermeture du navigateur.")
     driver.quit()
 
-print("Script terminé.")
+print(f"Script terminé, toutes les images ont été téléchargées dans le dossier : {BASE_DOWNLOAD_DIR}")
