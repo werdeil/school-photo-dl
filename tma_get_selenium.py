@@ -5,6 +5,7 @@ import logging
 
 import requests
 from selenium import webdriver
+from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
@@ -27,10 +28,14 @@ def get_session_cookie():
         raise ValueError("La variable d'environnement 'TMA_SESSION' n'est pas définie.")
     return session
 
-def init_driver():
+def init_driver(headless=True):
     logger.info("Initialisation du driver Chrome...")
     options = webdriver.ChromeOptions()
-    options.add_argument('headless')
+    if not headless:
+        logger.warning("Le mode headless est désactivé, le navigateur s'ouvrira visuellement.")
+    else:
+        logger.info("Le mode headless est activé, le navigateur ne s'ouvrira pas visuellement.")
+        options.add_argument('headless')
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     driver.set_window_size(1920, 1080)
     return driver
@@ -43,7 +48,7 @@ def get_spaces(session_cookie):
     )
     spaces = []
     for space in list_response.json()['spaces']:
-        logger.info(f"UUID: {space['uuid']}, Nom de l'espace : {space['display_name']}, Année : {space['display_years']}")
+        logger.info(f"UUID: {space['uuid']}, Année : {space['display_years']}, Nom de l'espace : {space['display_name']}")
         spaces.append({'name': space['display_name'], 'uuid': space['uuid']})
     return spaces
 
@@ -92,7 +97,7 @@ def process_article(driver, article, save_folder_path):
                 back_button.click()
                 logger.debug("Bouton précédent cliqué, on attend le chargement des images...")
                 time.sleep(2)
-            except Exception as e:
+            except NoSuchElementException as e:
                 logger.error(f"Erreur lors du clic sur le bouton précédent : {e}")
             images = driver.find_elements(By.XPATH, '//*[@id="lg-container-1"]//img')
         logger.info(f"Nombre d'images trouvées : {len(images)-1}")
@@ -109,7 +114,7 @@ def process_article(driver, article, save_folder_path):
     except Exception as e:
         logger.error(f"Erreur lors du traitement du bouton : {e}")
 
-def process_space(driver, space, session_cookie):
+def process_space(driver, space):
     url = f"{BASE_TMA_URL}/journal/{space['uuid']}"
     logger.info(f"Traitement de l'URL : {url}")
     url_id = os.path.basename(url)
@@ -127,13 +132,13 @@ def main():
     driver = init_driver()
     try:
         driver.get(DASHBOARD_URL)
-        logger.info("Ajout des cookies de session...")
+        logger.debug("Ajout des cookies de session...")
         driver.add_cookie({'name': 'diedm_session', 'value': session_cookie})
         driver.get(DASHBOARD_URL)
         time.sleep(5)
         spaces = get_spaces(session_cookie)
         for space in spaces:
-            process_space(driver, space, session_cookie)
+            process_space(driver, space)
     finally:
         logger.debug("Nettoyage et fermeture du navigateur.")
         driver.quit()
