@@ -91,10 +91,13 @@ def process_article(driver, article, save_folder_path):
             driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", button)
             button.click()
             time.sleep(2)
-        except NoSuchElementException as e:
-
-            logger.error(f"Erreur lors du clic sur le bouton de la galerie {title_text} : {e}")
-            img_path = '//*[contains(@class,"cursor-zoomin")]'
+        except NoSuchElementException:
+            logger.warning(f"Le bouton de la galerie n'a pas été trouvé pour l'article : {title_text}. Essayons de trouver une image directement.")
+            image = article.find_element(By.XPATH, './/*[contains(@class,"cursor-zoomin")]')
+            img_url = re.findall(r'url\("(.*)"\)', image.get_attribute('style'))[0]
+            logger.debug(f"Téléchargement de l'image : {img_url}")
+            download_image(img_url, article_folder_path)
+            return
         images = driver.find_elements(By.XPATH, img_path)
         if len(images) == 26:
             logger.debug("Carrousel avec 25 images, on va essayer de charger plus d'images...")
@@ -107,12 +110,13 @@ def process_article(driver, article, save_folder_path):
                 logger.error(f"Erreur lors du clic sur le bouton précédent : {e}")
             images = driver.find_elements(By.XPATH, '//*[@id="lg-container-1"]//img')
         if len(images) == 51:
-            logger.debug("Carrousel avec 50 images, on va essayer de charger encore plus d'images...")
-            for i in range(25):
-                next_button = driver.find_element(By.ID, 'lg-next-1')
+            logger.warning("Carrousel avec 50 images, on va essayer de charger encore plus d'images...")
+            for i in range(26):
+                next_button = driver.find_element(By.ID, 'lg-prev-1')
                 next_button.click()
-                logger.debug("Bouton suivant cliqué, on attend le chargement des images...")
-                time.sleep(0.5)
+                logger.debug("Bouton précédent cliqué, on attend le chargement des images...")
+                time.sleep(1)
+            time.sleep(2)
             images = driver.find_elements(By.XPATH, '//*[@id="lg-container-1"]//img')
         logger.info(f"Nombre d'images trouvées : {len(images)-1}")
         for img in images:
