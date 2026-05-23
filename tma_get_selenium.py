@@ -1,17 +1,19 @@
+"""Téléchargeur de photos depuis toutemonannee.com via Selenium."""
+
 import os
 import re
 import time
 import logging
 
 from dotenv import load_dotenv
-import requests
-
-load_dotenv()
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+import requests
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +24,7 @@ logger = logging.getLogger(__name__)
 BASE_DOWNLOAD_DIR = os.path.expanduser('~/Documents/TMA')
 BASE_TMA_URL = 'https://www.toutemonannee.com'
 DASHBOARD_URL = f'{BASE_TMA_URL}/dashboard'
+
 
 def login_with_credentials(driver, username, password):
     """Remplit le formulaire de login en 2 étapes et retourne le cookie diedm_session."""
@@ -44,7 +47,9 @@ def login_with_credentials(driver, username, password):
     logger.info("Connexion réussie, cookie de session récupéré.")
     return session_cookie
 
+
 def get_session_cookie(driver=None):
+    """Retourne le cookie diedm_session depuis l'env ou via login Selenium."""
     session = os.getenv('TMA_SESSION')
     if session:
         return session
@@ -53,7 +58,9 @@ def get_session_cookie(driver=None):
     password = os.getenv('TMA_PASSWORD')
     if username and password:
         if driver is None:
-            raise ValueError("Un driver Selenium est requis pour se connecter avec TMA_USERNAME/TMA_PASSWORD.")
+            raise ValueError(
+                "Un driver Selenium est requis pour se connecter avec TMA_USERNAME/TMA_PASSWORD."
+            )
         logger.info("TMA_SESSION absent, connexion avec TMA_USERNAME/TMA_PASSWORD...")
         return login_with_credentials(driver, username, password)
 
@@ -62,7 +69,9 @@ def get_session_cookie(driver=None):
         "Définissez TMA_SESSION ou TMA_USERNAME+TMA_PASSWORD dans le .env."
     )
 
+
 def init_driver(headless=True):
+    """Initialise et retourne un driver Chrome."""
     logger.info("Initialisation du driver Chrome...")
     options = webdriver.ChromeOptions()
     if headless:
@@ -74,7 +83,9 @@ def init_driver(headless=True):
     driver.set_window_size(1920, 1080)
     return driver
 
+
 def get_spaces(session_cookie):
+    """Récupère la liste des espaces/albums via l'API."""
     list_response = requests.get(
         f'{BASE_TMA_URL}/spaces/list',
         cookies={'diedm_session': session_cookie},
@@ -83,14 +94,18 @@ def get_spaces(session_cookie):
     data = list_response.json()
     spaces = []
     for space in data['spaces']:
-        logger.info(f"UUID: {space['uuid']}, Année : {space['display_years']}, Nom : {space['display_name']}")
+        logger.info("UUID: %s, Année : %s, Nom : %s",
+                    space['uuid'], space['display_years'], space['display_name'])
         spaces.append({'name': space['display_name'], 'uuid': space['uuid']})
     for space in data.get('spaces_soon_archived', []):
-        logger.info(f"UUID: {space['uuid']}, Année : {space['display_years']}, Nom (archivé) : {space['display_name']}")
+        logger.info("UUID: %s, Année : %s, Nom (archivé) : %s",
+                    space['uuid'], space['display_years'], space['display_name'])
         spaces.append({'name': space['display_name'], 'uuid': space['uuid']})
     return spaces
 
+
 def scroll_to_load_all_articles(driver):
+    """Scrolle jusqu'en bas pour déclencher le chargement paresseux de tous les articles."""
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
     time.sleep(3)
     articles = driver.find_elements(By.CSS_SELECTOR, "article:has(button.gallery-trigger)")
@@ -100,13 +115,14 @@ def scroll_to_load_all_articles(driver):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(2)
         articles = driver.find_elements(By.CSS_SELECTOR, "article:has(button.gallery-trigger)")
-        logger.debug(f"Articles après scroll : {len(articles)}")
+        logger.debug("Articles après scroll : %d", len(articles))
     return articles
+
 
 def collect_article_data(driver):
     """Collecte (date, title, post_url) de tous les articles sans naviguer hors de la page."""
     articles = scroll_to_load_all_articles(driver)
-    logger.info(f"Nombre total d'articles : {len(articles)}")
+    logger.info("Nombre total d'articles : %d", len(articles))
     result = []
     for article in articles:
         try:
@@ -127,61 +143,110 @@ def collect_article_data(driver):
         result.append((date, title_text, post_url))
     return result
 
+
 def download_image(hd_img_url, article_folder_path, session_cookie=None):
+    """Télécharge une image HD et la sauvegarde localement."""
     clean_img_url = re.sub(r'\?.*$', '', hd_img_url)
     try:
         img_name = os.path.basename(clean_img_url)
         img_path = os.path.join(article_folder_path, img_name)
         if os.path.exists(img_path):
-            logger.debug(f"Déjà téléchargée : {img_name}")
+            logger.debug("Déjà téléchargée : %s", img_name)
             return
         cookies = {'diedm_session': session_cookie} if session_cookie else {}
         img_data = requests.get(clean_img_url, cookies=cookies, timeout=30).content
-        with open(img_path, 'wb') as f:
-            f.write(img_data)
-        logger.info(f"Image sauvegardée : {img_name}")
-    except Exception as e:
-        logger.error(f"Erreur téléchargement {clean_img_url} : {e}")
+        with open(img_path, 'wb') as img_file:
+            img_file.write(img_data)
+        logger.info("Image sauvegardée : %s", img_name)
+    except Exception as err:  # pylint: disable=broad-except
+        logger.error("Erreur téléchargement %s : %s", clean_img_url, err)
+
 
 def extract_image_urls_from_page(driver):
     """Cherche les URLs d'images via plusieurs stratégies : lightgallery, background-image, data-src."""
     urls = set()
 
-    # Stratégie 1 : img tags (lightgallery ou contenu direct)
     for img in driver.find_elements(By.TAG_NAME, "img"):
         src = img.get_attribute('src') or ''
-        if 'toutemonannee.com' in src and not any(x in src for x in ['logo', 'icon', 'avatar', 'navigation', 'reaction', 'asset']):
+        if 'toutemonannee.com' in src and not any(
+            x in src for x in ['logo', 'icon', 'avatar', 'navigation', 'reaction', 'asset']
+        ):
             urls.add(src)
         data_src = img.get_attribute('data-src') or ''
         if 'toutemonannee.com' in data_src:
             urls.add(data_src)
 
-    # Stratégie 2 : background-image dans les styles
-    for el in driver.find_elements(By.XPATH, '//*[contains(@style,"url(")]'):
-        style = el.get_attribute('style') or ''
+    for element in driver.find_elements(By.XPATH, '//*[contains(@style,"url(")]'):
+        style = element.get_attribute('style') or ''
         found = re.findall(r'url\(["\']?(https?://[^"\')\s]+)["\']?\)', style)
-        for u in found:
-            if 'toutemonannee.com' in u and not any(x in u for x in ['logo', 'icon', 'asset']):
-                urls.add(u)
+        for url in found:
+            if 'toutemonannee.com' in url and not any(x in url for x in ['logo', 'icon', 'asset']):
+                urls.add(url)
 
-    # Stratégie 3 : data-src sur n'importe quel élément
-    for el in driver.find_elements(By.XPATH, '//*[@data-src]'):
-        data_src = el.get_attribute('data-src') or ''
+    for element in driver.find_elements(By.XPATH, '//*[@data-src]'):
+        data_src = element.get_attribute('data-src') or ''
         if 'toutemonannee.com' in data_src:
             urls.add(data_src)
 
     return urls
 
-def process_post(driver, date, title_text, post_url, save_folder_path, session_cookie=None):
+
+def _handle_gallery_images(driver, article_folder_path, session_cookie):
+    """Gère la pagination lightgallery et télécharge les images ; retourne le nombre téléchargé."""
+    images = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
+    if len(images) == 26:
+        try:
+            driver.find_element(By.XPATH, '//*[starts-with(@id,"lg-prev-")]').click()
+            time.sleep(2)
+            images = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
+        except NoSuchElementException:
+            pass
+    if len(images) == 51:
+        for _ in range(26):
+            try:
+                driver.find_element(By.XPATH, '//*[starts-with(@id,"lg-prev-")]').click()
+                time.sleep(1)
+            except NoSuchElementException:
+                break
+        time.sleep(2)
+        images = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
+
+    downloaded = 0
+    for img in images:
+        src = img.get_attribute('src') or ''
+        if 'thumbs' in src:
+            download_image(src.replace('thumbs', 'hd'), article_folder_path, session_cookie)
+            downloaded += 1
+    return downloaded
+
+
+def _handle_fallback_images(driver, article_folder_path, session_cookie):
+    """Extrait et télécharge les images directement depuis la page (fallback sans galerie)."""
+    raw_urls = extract_image_urls_from_page(driver)
+    hd_urls = {}
+    for url in raw_urls:
+        clean = re.sub(r'\?.*$', '', url)
+        hd_clean = clean.replace('/thumbs/', '/hd/')
+        hd_urls[os.path.basename(hd_clean)] = hd_clean
+
+    downloaded = 0
+    for hd_url in hd_urls.values():
+        download_image(hd_url, article_folder_path, session_cookie)
+        downloaded += 1
+    return downloaded
+
+
+def process_post(driver, article_data, save_folder_path, session_cookie=None):
+    """Traite un article : ouvre la galerie et télécharge ses images."""
+    date, title_text, post_url = article_data
     folder_name = f"{date} - {title_text}" if title_text else date
     article_folder_path = os.path.join(save_folder_path, folder_name)
     os.makedirs(article_folder_path, exist_ok=True)
-    logger.info(f"Traitement du post : {title_text or post_url}")
+    logger.info("Traitement du post : %s", title_text or post_url)
 
     driver.get(post_url)
     time.sleep(3)
 
-    # Tenter d'ouvrir la galerie lightgallery
     gallery_opened = False
     try:
         button = driver.find_element(By.CSS_SELECTOR, "button.gallery-trigger")
@@ -190,79 +255,42 @@ def process_post(driver, date, title_text, post_url, save_folder_path, session_c
         lg_imgs = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
         if lg_imgs:
             gallery_opened = True
-            logger.info(f"Galerie ouverte, {len(lg_imgs)} images trouvées.")
+            logger.info("Galerie ouverte, %d images trouvées.", len(lg_imgs))
     except NoSuchElementException:
         pass
 
     if gallery_opened:
-        # Pagination lightgallery si nécessaire
-        images = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
-        if len(images) == 26:
-            try:
-                driver.find_element(By.XPATH, '//*[starts-with(@id,"lg-prev-")]').click()
-                time.sleep(2)
-                images = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
-            except NoSuchElementException:
-                pass
-        if len(images) == 51:
-            for _ in range(26):
-                try:
-                    driver.find_element(By.XPATH, '//*[starts-with(@id,"lg-prev-")]').click()
-                    time.sleep(1)
-                except NoSuchElementException:
-                    break
-            time.sleep(2)
-            images = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
-
-        downloaded = 0
-        for img in images:
-            src = img.get_attribute('src') or ''
-            if 'thumbs' in src:
-                hd_url = src.replace('thumbs', 'hd')
-                download_image(hd_url, article_folder_path, session_cookie)
-                downloaded += 1
-        logger.info(f"{downloaded} images téléchargées pour : {title_text}")
-
+        downloaded = _handle_gallery_images(driver, article_folder_path, session_cookie)
+        logger.info("%d images téléchargées pour : %s", downloaded, title_text)
         close_btns = driver.find_elements(By.CSS_SELECTOR, 'button.lg-close')
         if close_btns:
             close_btns[0].click()
             time.sleep(1)
         return
 
-    # Fallback : chercher les images directement dans la page (background-image, data-src, img)
-    logger.info(f"Galerie non ouverte, extraction directe des images pour : {title_text}")
+    logger.info("Galerie non ouverte, extraction directe des images pour : %s", title_text)
+    downloaded = _handle_fallback_images(driver, article_folder_path, session_cookie)
+    logger.info("%d images téléchargées pour : %s", downloaded, title_text)
 
-    raw_urls = extract_image_urls_from_page(driver)
-    # Convertir toutes les thumbs en hd, puis dédupliquer par nom de fichier
-    hd_urls = {}
-    for url in raw_urls:
-        clean = re.sub(r'\?.*$', '', url)
-        hd_clean = clean.replace('/thumbs/', '/hd/')
-        filename = os.path.basename(hd_clean)
-        hd_urls[filename] = hd_clean
-
-    downloaded = 0
-    for filename, hd_url in hd_urls.items():
-        download_image(hd_url, article_folder_path, session_cookie)
-        downloaded += 1
-    logger.info(f"{downloaded} images téléchargées pour : {title_text}")
 
 def process_space(driver, space, session_cookie=None):
+    """Traite un espace/album : collecte les articles et les télécharge."""
     url = f"{BASE_TMA_URL}/journal/{space['uuid']}"
-    logger.info(f"Traitement de l'espace : {space['name']} — {url}")
+    logger.info("Traitement de l'espace : %s — %s", space['name'], url)
     save_folder_path = os.path.join(BASE_DOWNLOAD_DIR, space['name'])
     driver.add_cookie({'name': f'noShowAlbumPopupAnymore_{space["uuid"]}', 'value': '1'})
     driver.add_cookie({'name': 'noShowSouvenirPopupAnymore', 'value': '1'})
     driver.get(url)
     time.sleep(5)
 
-    # Collecter toutes les données avant de naviguer ailleurs
     articles_data = collect_article_data(driver)
 
-    for date, title_text, post_url in articles_data:
-        process_post(driver, date, title_text, post_url, save_folder_path, session_cookie)
+    for article_data in articles_data:
+        process_post(driver, article_data, save_folder_path, session_cookie)
+
 
 def main():
+    """Point d'entrée principal : initialise le driver et traite tous les espaces."""
     driver = init_driver()
     try:
         driver.get(DASHBOARD_URL)
@@ -275,7 +303,8 @@ def main():
             process_space(driver, space, session_cookie)
     finally:
         driver.quit()
-    logger.info(f"Terminé. Images dans : {BASE_DOWNLOAD_DIR}")
+    logger.info("Terminé. Images dans : %s", BASE_DOWNLOAD_DIR)
+
 
 if __name__ == "__main__":
     main()
