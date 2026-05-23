@@ -35,7 +35,7 @@ def init_driver(headless=False):
         logger.warning("Le mode headless est désactivé, le navigateur s'ouvrira visuellement.")
     else:
         logger.info("Le mode headless est activé, le navigateur ne s'ouvrira pas visuellement.")
-        options.add_argument('headless')
+        options.add_argument('--headless=new')
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     driver.set_window_size(1920, 1080)
     return driver
@@ -46,11 +46,12 @@ def get_spaces(session_cookie):
         cookies={'diedm_session': session_cookie},
         timeout=10
     )
+    data = list_response.json()
     spaces = []
-    for space in list_response.json()['spaces']:
+    for space in data['spaces']:
         logger.info(f"UUID: {space['uuid']}, Année : {space['display_years']}, Nom de l'espace : {space['display_name']}")
         spaces.append({'name': space['display_name'], 'uuid': space['uuid']})
-    for space in list_response.json().get('spaces_soon_archived', []):
+    for space in data.get('spaces_soon_archived', []):
         logger.info(f"UUID: {space['uuid']}, Année : {space['display_years']}, Nom de l'espace (archivé) : {space['display_name']}")
         spaces.append({'name': space['display_name'], 'uuid': space['uuid']})
     return spaces
@@ -69,9 +70,12 @@ def scroll_to_load_all_articles(driver):
 def download_image(hd_img_url, article_folder_path):
     clean_img_url = re.sub(r'\?.*$', '', hd_img_url)
     try:
-        img_data = requests.get(clean_img_url, timeout=10).content
         img_name = os.path.basename(clean_img_url)
         img_path = os.path.join(article_folder_path, img_name)
+        if os.path.exists(img_path):
+            logger.debug(f"Image déjà téléchargée, on passe : {img_name}")
+            return
+        img_data = requests.get(clean_img_url, timeout=10).content
         with open(img_path, 'wb') as img_file:
             img_file.write(img_data)
         logger.debug(f"Image sauvegardée : {img_name}")
@@ -88,7 +92,7 @@ def process_article(driver, article, save_folder_path):
     logger.debug(f"Les images seront sauvegardées dans : {article_folder_path}")
 
     try:
-        img_path = '//*[@id="lg-container-1"]//img'
+        lg_images_xpath = '//*[@id="lg-container-1"]//img'
         try:
             button = article.find_element(By.CSS_SELECTOR, "button.gallery-trigger")
             driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", button)
@@ -101,7 +105,7 @@ def process_article(driver, article, save_folder_path):
             logger.debug(f"Téléchargement de l'image : {img_url}")
             download_image(img_url, article_folder_path)
             return
-        images = driver.find_elements(By.XPATH, img_path)
+        images = driver.find_elements(By.XPATH, lg_images_xpath)
         if len(images) == 26:
             logger.debug("Carrousel avec 25 images, on va essayer de charger plus d'images...")
             try:
@@ -121,6 +125,7 @@ def process_article(driver, article, save_folder_path):
                 time.sleep(1)
             time.sleep(2)
             images = driver.find_elements(By.XPATH, '//*[@id="lg-container-1"]//img')
+        # Le carrousel duplique l'image active, on soustrait 1 pour le vrai compte
         logger.info(f"Nombre d'images trouvées : {len(images)-1}")
         for img in images:
             img_url = img.get_attribute('src')
@@ -138,9 +143,8 @@ def process_article(driver, article, save_folder_path):
 def process_space(driver, space):
     url = f"{BASE_TMA_URL}/journal/{space['uuid']}"
     logger.info(f"Traitement de l'URL : {url}")
-    url_id = os.path.basename(url)
     save_folder_path = os.path.join(BASE_DOWNLOAD_DIR, space['name'])
-    driver.add_cookie({'name': f'noShowAlbumPopupAnymore_{url_id}', 'value': '1'})
+    driver.add_cookie({'name': f'noShowAlbumPopupAnymore_{space["uuid"]}', 'value': '1'})
     driver.add_cookie({'name': 'noShowSouvenirPopupAnymore', 'value': '1'})
     driver.get(url)
     time.sleep(5)
