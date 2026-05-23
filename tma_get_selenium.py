@@ -163,7 +163,7 @@ def download_image(hd_img_url, article_folder_path, session_cookie=None):
 
 
 def extract_image_urls_from_page(driver):
-    """Cherche les URLs d'images via plusieurs stratégies : lightgallery, background-image, data-src."""
+    """Cherche les URLs d'images (lightgallery, background-image, data-src)."""
     urls = set()
 
     for img in driver.find_elements(By.TAG_NAME, "img"):
