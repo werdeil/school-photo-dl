@@ -24,11 +24,13 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
 
     if args.command == "tma":
+        # pylint: disable=import-outside-toplevel  # lazy: n'importe pas le scraper klassly inutilement
         from school_photo_dl.tma.scraper import main as tma_main
         tma_main()
         return 0
 
     if args.command == "klassly":
+        # pylint: disable=import-outside-toplevel  # lazy: n'importe pas le scraper tma inutilement
         from school_photo_dl.klassly.scraper import main as klassly_main
         klassly_main()
         return 0
