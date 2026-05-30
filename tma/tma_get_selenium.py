@@ -6,19 +6,15 @@ import time
 import logging
 
 from dotenv import load_dotenv
-from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 import requests
 
-load_dotenv()
+from shared.driver import init_driver
+from shared.utils import configure_logging, safe_name
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+load_dotenv()
+configure_logging()
 logger = logging.getLogger(__name__)
 
 _download_dir = os.getenv('TMA_DOWNLOAD_DIR')
@@ -61,19 +57,6 @@ def get_session_cookie(driver):
         )
     return login_with_credentials(driver, username, password)
 
-
-def init_driver(headless=os.getenv('TMA_HEADLESS', 'true').lower() != 'false'):
-    """Initialise et retourne un driver Chrome."""
-    logger.info("Initialisation du driver Chrome...")
-    options = webdriver.ChromeOptions()
-    if headless:
-        options.add_argument('--headless=new')
-        logger.info("Mode headless activé.")
-    else:
-        logger.warning("Mode headless désactivé, le navigateur s'ouvrira visuellement.")
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    driver.set_window_size(1920, 1080)
-    return driver
 
 
 def get_spaces(session_cookie):
@@ -231,7 +214,7 @@ def _handle_fallback_images(driver, article_folder_path, session_cookie):
 def process_post(driver, article_data, save_folder_path, session_cookie=None):
     """Traite un article : ouvre la galerie et télécharge ses images."""
     date, title_text, post_url = article_data
-    folder_name = f"{date} - {title_text}" if title_text else date
+    folder_name = safe_name(f"{date} - {title_text}" if title_text else date)
     article_folder_path = os.path.join(save_folder_path, folder_name)
     os.makedirs(article_folder_path, exist_ok=True)
     logger.info("Traitement du post : %s", title_text or post_url)
@@ -283,7 +266,8 @@ def process_space(driver, space, session_cookie=None):
 
 def main():
     """Point d'entrée principal : initialise le driver et traite tous les espaces."""
-    driver = init_driver()
+    headless = os.getenv('TMA_HEADLESS', 'true').lower() != 'false'
+    driver = init_driver(headless=headless)
     try:
         driver.get(DASHBOARD_URL)
         session_cookie = get_session_cookie(driver)

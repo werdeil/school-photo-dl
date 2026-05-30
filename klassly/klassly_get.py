@@ -3,49 +3,25 @@
 import base64
 import json
 import os
-import re
 import time
 import logging
 from datetime import datetime
 
 from dotenv import load_dotenv
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException
-from webdriver_manager.chrome import ChromeDriverManager
+
+from shared.driver import init_driver
+from shared.utils import configure_logging, safe_name
 
 load_dotenv()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://fr.klass.ly"
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-
-
-# ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
-
-def init_driver(headless=True):
-    """Initialise et retourne un driver Chrome avec le logging CDP activé."""
-    opts = Options()
-    if headless:
-        opts.add_argument("--headless=new")
-    opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()), options=opts
-    )
-    driver.execute_cdp_cmd("Network.enable", {})
-    driver.set_window_size(1920, 1080)
-    return driver
 
 
 # ---------------------------------------------------------------------------
@@ -210,11 +186,6 @@ def collect_all_posts(driver):
 # Nommage
 # ---------------------------------------------------------------------------
 
-def safe_name(name):
-    """Remplace les caractères interdits dans un nom de fichier/dossier."""
-    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip()
-
-
 def post_folder_name(post_id, post):
     """Retourne le nom de dossier `YYYY-MM-DD - titre` pour un post."""
     epoch_ms = post.get("date", 0)
@@ -327,7 +298,7 @@ def main():
         )
 
     headless = os.getenv("KLASSLY_HEADLESS", "true").lower() != "false"
-    driver = init_driver(headless=headless)
+    driver = init_driver(headless=headless, enable_cdp=True)
 
     try:
         login(driver, username, password)
