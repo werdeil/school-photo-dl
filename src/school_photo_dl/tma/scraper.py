@@ -1,15 +1,21 @@
-"""Téléchargeur de photos depuis toutemonannee.com via Selenium."""
+"""Téléchargeur de photos depuis toutemonannee.com.
+
+Selenium est utilisé uniquement pour le login (formulaire en 2 étapes) et pour
+lister les articles d'un espace. Les photos elles-mêmes sont récupérées via
+l'API JSON `/journal/{space}/posts/photos/{post}` en HTTP direct.
+"""
 
 import os
 import re
 import time
 import logging
+from collections import namedtuple
 from datetime import timedelta
 
+import requests
 from dotenv import load_dotenv
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
-import requests
 
 from school_photo_dl.shared.driver import init_driver
 from school_photo_dl.shared.utils import (
@@ -26,6 +32,10 @@ logger = logging.getLogger(__name__)
 BASE_TMA_URL = 'https://www.toutemonannee.com'
 DASHBOARD_URL = f'{BASE_TMA_URL}/dashboard'
 
+
+# ---------------------------------------------------------------------------
+# Authentification (Selenium)
+# ---------------------------------------------------------------------------
 
 def login_with_credentials(driver, username, password):
     """Remplit le formulaire de login en 2 étapes et retourne le cookie diedm_session."""
@@ -60,6 +70,9 @@ def get_session_cookie(driver):
     return login_with_credentials(driver, username, password)
 
 
+# ---------------------------------------------------------------------------
+# Listing : espaces (HTTP API) + articles (DOM Selenium)
+# ---------------------------------------------------------------------------
 
 def get_spaces(session_cookie):
     """Récupère la liste des espaces/albums via l'API."""
@@ -129,6 +142,44 @@ def collect_article_data(driver):
     return result
 
 
+# ---------------------------------------------------------------------------
+# API photos d'un post + téléchargement
+# ---------------------------------------------------------------------------
+
+_POST_ID_RE = re.compile(r'/posts/(\d+)')
+
+
+def _parse_post_id(post_url):
+    """Extrait l'ID numérique d'un post depuis l'URL `/posts/{id}`."""
+    match = _POST_ID_RE.search(post_url or '')
+    return match.group(1) if match else None
+
+
+def fetch_post_photos(space_uuid, post_id, session_cookie):
+    """Récupère toutes les photos d'un post via l'API JSON paginée.
+
+    L'endpoint `/journal/{space}/posts/photos/{post}?page=N&per_page=K`
+    renvoie `{total, current_page, last_page, page_size, data: [...]}`
+    où chaque élément de `data` expose `src` (URL HD), `extension`, `uuid`, etc.
+    """
+    cookies = {"diedm_session": session_cookie}
+    photos = []
+    page = 1
+    while True:
+        url = (f"{BASE_TMA_URL}/journal/{space_uuid}/posts/photos/{post_id}"
+               f"?page={page}&per_page=100")
+        resp = requests.get(url, cookies=cookies, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        batch = data.get("data") or []
+        photos.extend(batch)
+        last_page = data.get("last_page", 1)
+        if page >= last_page or not batch:
+            break
+        page += 1
+    return photos
+
+
 def download_image(hd_img_url, dest_path, session_cookie=None):
     """Télécharge une image HD vers dest_path. Retourne le chemin ou None."""
     img_name = os.path.basename(dest_path)
@@ -148,43 +199,6 @@ def download_image(hd_img_url, dest_path, session_cookie=None):
         return None
 
 
-def _build_image_filename(name_prefix, index, src_url):
-    """Construit `NNN_{name_prefix}.ext`. Si name_prefix vide → `NNN.ext`."""
-    clean = re.sub(r'\?.*$', '', src_url)
-    ext = os.path.splitext(clean)[1].lower() or '.jpg'
-    num = f"{index + 1:03d}"
-    return f"{num}_{name_prefix}{ext}" if name_prefix else f"{num}{ext}"
-
-
-def extract_image_urls_from_page(driver):
-    """Cherche les URLs d'images (lightgallery, background-image, data-src)."""
-    urls = set()
-
-    for img in driver.find_elements(By.TAG_NAME, "img"):
-        src = img.get_attribute('src') or ''
-        if 'toutemonannee.com' in src and not any(
-            x in src for x in ['logo', 'icon', 'avatar', 'navigation', 'reaction', 'asset']
-        ):
-            urls.add(src)
-        data_src = img.get_attribute('data-src') or ''
-        if 'toutemonannee.com' in data_src:
-            urls.add(data_src)
-
-    for element in driver.find_elements(By.XPATH, '//*[contains(@style,"url(")]'):
-        style = element.get_attribute('style') or ''
-        found = re.findall(r'url\(["\']?(https?://[^"\')\s]+)["\']?\)', style)
-        for url in found:
-            if 'toutemonannee.com' in url and not any(x in url for x in ['logo', 'icon', 'asset']):
-                urls.add(url)
-
-    for element in driver.find_elements(By.XPATH, '//*[@data-src]'):
-        data_src = element.get_attribute('data-src') or ''
-        if 'toutemonannee.com' in data_src:
-            urls.add(data_src)
-
-    return urls
-
-
 def _apply_photo_date(img_path, base_dt, index):
     """Applique base_dt + index minutes à l'image si base_dt est défini."""
     if base_dt is None or img_path is None:
@@ -192,58 +206,24 @@ def _apply_photo_date(img_path, base_dt, index):
     set_image_datetime(img_path, base_dt + timedelta(minutes=index))
 
 
-def _handle_gallery_images(driver, article_folder_path, session_cookie,
-                           base_dt=None, name_prefix=""):
-    """Gère la pagination lightgallery et télécharge les images ; retourne le nombre téléchargé."""
-    images = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
-    if len(images) == 26:
-        try:
-            driver.find_element(By.XPATH, '//*[starts-with(@id,"lg-prev-")]').click()
-            time.sleep(2)
-            images = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
-        except NoSuchElementException:
-            pass
-    if len(images) == 51:
-        for _ in range(26):
-            try:
-                driver.find_element(By.XPATH, '//*[starts-with(@id,"lg-prev-")]').click()
-                time.sleep(1)
-            except NoSuchElementException:
-                break
-        time.sleep(2)
-        images = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
+# ---------------------------------------------------------------------------
+# Orchestration par post / espace
+# ---------------------------------------------------------------------------
 
-    downloaded = 0
-    for img in images:
-        src = img.get_attribute('src') or ''
-        if 'thumbs' in src:
-            hd_url = src.replace('thumbs', 'hd')
-            filename = _build_image_filename(name_prefix, downloaded, hd_url)
-            dest_path = os.path.join(article_folder_path, filename)
-            img_path = download_image(hd_url, dest_path, session_cookie)
-            _apply_photo_date(img_path, base_dt, downloaded)
-            downloaded += 1
-    return downloaded
+_PostCtx = namedtuple('_PostCtx', 'folder session_cookie base_dt name_prefix')
 
 
-def _handle_fallback_images(driver, article_folder_path, session_cookie,
-                            base_dt=None, name_prefix=""):
-    """Extrait et télécharge les images directement depuis la page (fallback sans galerie)."""
-    raw_urls = extract_image_urls_from_page(driver)
-    hd_urls = {}
-    for url in raw_urls:
-        clean = re.sub(r'\?.*$', '', url)
-        hd_clean = clean.replace('/thumbs/', '/hd/')
-        hd_urls[os.path.basename(hd_clean)] = hd_clean
-
-    downloaded = 0
-    for hd_url in sorted(hd_urls.values()):
-        filename = _build_image_filename(name_prefix, downloaded, hd_url)
-        dest_path = os.path.join(article_folder_path, filename)
-        img_path = download_image(hd_url, dest_path, session_cookie)
-        _apply_photo_date(img_path, base_dt, downloaded)
-        downloaded += 1
-    return downloaded
+def _download_api_photo(photo, index, ctx):
+    """Télécharge une photo retournée par l'API et applique son EXIF date."""
+    src = photo.get("src")
+    if not src:
+        return
+    ext = (photo.get("extension") or "jpg").lstrip(".").lower()
+    num = f"{index + 1:03d}"
+    name = f"{num}_{ctx.name_prefix}.{ext}" if ctx.name_prefix else f"{num}.{ext}"
+    dest_path = os.path.join(ctx.folder, name)
+    img_path = download_image(src, dest_path, ctx.session_cookie)
+    _apply_photo_date(img_path, ctx.base_dt, index)
 
 
 def _build_post_naming(date, title_text, base_dt):
@@ -260,61 +240,42 @@ def _build_post_naming(date, title_text, base_dt):
     return folder_name, name_prefix
 
 
-def _try_open_gallery(driver):
-    """Tente d'ouvrir la galerie lightgallery. Retourne True si des images sont visibles."""
-    try:
-        button = driver.find_element(By.CSS_SELECTOR, "button.gallery-trigger")
-    except NoSuchElementException:
-        return False
-    driver.execute_script("arguments[0].click();", button)
-    time.sleep(3)
-    lg_imgs = driver.find_elements(By.XPATH, '//*[contains(@id,"lg-container")]//img')
-    if not lg_imgs:
-        return False
-    logger.info("Galerie ouverte, %d images trouvées.", len(lg_imgs))
-    return True
-
-
-def _close_gallery(driver):
-    """Ferme la galerie lightgallery si un bouton de fermeture est présent."""
-    close_btns = driver.find_elements(By.CSS_SELECTOR, 'button.lg-close')
-    if close_btns:
-        close_btns[0].click()
-        time.sleep(1)
-
-
-def process_post(driver, article_data, save_folder_path, session_cookie=None, years_range=''):
-    """Traite un article : ouvre la galerie et télécharge ses images."""
+def _prepare_post_ctx(article_data, save_folder_path, session_cookie, space):
+    """Calcule le dossier et le contexte de téléchargement pour un post."""
     date, title_text, post_url = article_data
-
-    base_dt = parse_french_date(date, years_range)
-    if base_dt is None:
-        logger.debug("Date non parsable ('%s' + '%s'), EXIF inchangé.", date, years_range)
-
+    base_dt = parse_french_date(date, space.get('years', ''))
     folder_name, name_prefix = _build_post_naming(date, title_text, base_dt)
-    article_folder_path = os.path.join(save_folder_path, folder_name)
-    os.makedirs(article_folder_path, exist_ok=True)
+    folder = os.path.join(save_folder_path, folder_name)
+    os.makedirs(folder, exist_ok=True)
+    ctx = _PostCtx(folder, session_cookie, base_dt, name_prefix)
+    return ctx, title_text, post_url
+
+
+def process_post(article_data, save_folder_path, session_cookie, space):
+    """Télécharge toutes les photos d'un post via l'API."""
+    ctx, title_text, post_url = _prepare_post_ctx(
+        article_data, save_folder_path, session_cookie, space,
+    )
     logger.info("Traitement du post : %s", title_text or post_url)
 
-    driver.get(post_url)
-    time.sleep(3)
-
-    if _try_open_gallery(driver):
-        downloaded = _handle_gallery_images(
-            driver, article_folder_path, session_cookie, base_dt, name_prefix
-        )
-        logger.info("%d images téléchargées pour : %s", downloaded, title_text)
-        _close_gallery(driver)
+    post_id = _parse_post_id(post_url)
+    if not post_id:
+        logger.warning("Aucun post_id extrait de %s, ignoré.", post_url)
         return
 
-    logger.info("Galerie non ouverte, extraction directe des images pour : %s", title_text)
-    downloaded = _handle_fallback_images(
-        driver, article_folder_path, session_cookie, base_dt, name_prefix
-    )
-    logger.info("%d images téléchargées pour : %s", downloaded, title_text)
+    try:
+        photos = fetch_post_photos(space['uuid'], post_id, ctx.session_cookie)
+    except (requests.RequestException, ValueError) as exc:
+        logger.error("Échec API photos pour post %s (%s) ; aucune image récupérée.",
+                     post_id, exc)
+        return
+
+    logger.info("%d photo(s) pour : %s", len(photos), title_text)
+    for index, photo in enumerate(photos):
+        _download_api_photo(photo, index, ctx)
 
 
-def process_space(driver, space, base_download_dir, session_cookie=None):
+def process_space(driver, space, base_download_dir, session_cookie):
     """Traite un espace/album : collecte les articles et les télécharge."""
     url = f"{BASE_TMA_URL}/journal/{space['uuid']}"
     logger.info("Traitement de l'espace : %s — %s", space['name'], url)
@@ -324,11 +285,8 @@ def process_space(driver, space, base_download_dir, session_cookie=None):
     driver.get(url)
     time.sleep(5)
 
-    articles_data = collect_article_data(driver)
-    years_range = space.get('years', '')
-
-    for article_data in articles_data:
-        process_post(driver, article_data, save_folder_path, session_cookie, years_range)
+    for article_data in collect_article_data(driver):
+        process_post(article_data, save_folder_path, session_cookie, space)
 
 
 def main():
@@ -349,8 +307,7 @@ def main():
         driver.add_cookie({'name': 'diedm_session', 'value': session_cookie})
         driver.get(DASHBOARD_URL)
         time.sleep(5)
-        spaces = get_spaces(session_cookie)
-        for space in spaces:
+        for space in get_spaces(session_cookie):
             process_space(driver, space, base_download_dir, session_cookie)
     finally:
         driver.quit()

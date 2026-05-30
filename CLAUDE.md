@@ -9,8 +9,10 @@ des scrapers pour deux plateformes de partage photo scolaires françaises :
 - [toutemonannee.com](https://www.toutemonannee.com) — [src/school_photo_dl/tma/scraper.py](src/school_photo_dl/tma/scraper.py)
 - [klass.ly](https://fr.klass.ly) — [src/school_photo_dl/klassly/scraper.py](src/school_photo_dl/klassly/scraper.py)
 
-Les deux pilotent Chrome via Selenium et enregistrent les images localement,
-organisées par album/classe et date.
+Les deux ouvrent Chrome via Selenium pour l'authentification ; ensuite TMA
+récupère les photos via une API JSON (`requests` pur), tandis que Klassly
+combine `requests` + fetch JS injecté dans la page + fallback CDP. Tout est
+enregistré localement, organisé par album/classe et date.
 
 ## Repo layout
 
@@ -55,7 +57,7 @@ KLASSLY_PASSWORD="motdepasse"
 
 Dépendances déclarées dans [pyproject.toml](pyproject.toml) (pas de `requirements.txt`).
 Packages clés : `selenium>=4.33`, `requests>=2.32`, `webdriver-manager>=4.0`,
-`beautifulsoup4>=4.13`, `python-dotenv>=1.0`.
+`Pillow>=10.0`, `python-dotenv>=1.0`.
 
 ## Running
 
@@ -105,20 +107,25 @@ Klassly downloads vers `DOWNLOAD_DIR`, organisés en `{class_name}/{YYYY-MM-DD} 
 ```
 main()                                # charge .env + configure logging ici (pas au module level)
   └─ get_session_cookie()             → login Selenium → cookie diedm_session
-  └─ get_spaces()                     → HTTP API call → tous les albums/années ("spaces")
+  └─ get_spaces()                     → HTTP API → liste des albums/années
   └─ process_space(driver, space, base_download_dir, session_cookie)
-       └─ scroll_to_load_all_articles()
-       └─ collect_article_data()      → (date, title, post_url) par article
-       └─ process_post()              → ouvre galerie, paginer, télécharger
-            └─ download_image()       → HTTP GET + file write
+       └─ collect_article_data()      → DOM Selenium : (date, title, post_url) par article
+       └─ process_post(article, ...)  → API JSON → toutes les photos d'un post
+            └─ fetch_post_photos()    → GET /journal/{uuid}/posts/photos/{id}?per_page=100
+            └─ download_image()       → HTTP GET de chaque `src` HD + file write
 ```
+
+Selenium ne sert plus que pour le **login** et le **listing des articles**
+(la page journal a besoin du DOM rendu pour récupérer les liens de posts).
+Le téléchargement des photos est intégralement en `requests`.
 
 ### Key implementation details (TMA)
 
 - **Auth**: `get_session_cookie()` → `login_with_credentials()` ouvre Chrome, remplit le formulaire en deux étapes (email → "Continuer" → password → "Je me connecte") et retourne le cookie `diedm_session`. Cookie injecté dans `requests` et le driver Selenium.
-- **Image URL normalization**: URLs contenant `"thumbs"` réécrites vers `"hd"` ; query strings strippées.
-- **Carousel pagination**: les articles peuvent avoir >25 ou >50 images ; `_handle_gallery_images()` clique les contrôles "page précédente" pour les deux cas.
-- **Fallback sans galerie**: `_handle_fallback_images()` scanne `<img>`, `background-image` et `data-src` quand la galerie ne s'ouvre pas.
+- **API photos**: `fetch_post_photos(space_uuid, post_id, cookie)` appelle l'endpoint paginé `/journal/{space}/posts/photos/{post}?page=N&per_page=100`. La réponse JSON expose `total`, `last_page`, `data: [...]` avec pour chaque photo un `src` HD direct (S3) et `extension`. **Pagination automatique** si > 100 photos, mais en pratique `per_page=100` couvre tous les posts observés.
+- **URL HD**: les URLs `src` pointent vers `https://YEAR-{uuid}-gi.s3.toutemonannee.com/n1/{space}/hd/{file}.jpg?lastmod=...`. Le query string est strippé par `download_image()` avant la requête.
+- **Naming**: dossier = `{YYYY-MM-DD ou date FR} - {titre}` ; fichier = `{NNN}_{YYYY-MM-DD}_{slug}.{ext}`. L'extension vient du champ `extension` du JSON (pas dérivée de l'URL).
+- **EXIF date**: chaque image se voit attribuer `base_dt + index minutes` (10:00:00 + 1 min par photo, base = date du post parsée depuis le format FR).
 - **Output path**: `DOWNLOAD_DIR` (obligatoire, lève `EnvironmentError`) ; lu dans `main()`, **pas** au niveau module (sinon `import school_photo_dl.tma` planterait sans `.env`).
 
 ### Flow dans `src/school_photo_dl/klassly/scraper.py`
@@ -126,11 +133,12 @@ main()                                # charge .env + configure logging ici (pas
 ```
 main()                                # charge .env + configure logging ici
   └─ login()                          → Selenium remplit tel+password → klassroom_token
+  └─ ImageFetcher(driver)             → construit la stratégie de DL à 3 niveaux
   └─ get_classes()                    → navigue /class, capture app.connect via CDP → classes
-  └─ process_class(driver, klass, download_dir)
+  └─ process_class(driver, fetcher, klass, download_dir)
        └─ collect_all_posts()         → boucle CDP klass.history jusqu'à épuisement
-       └─ process_post()              → télécharge les attachments image du post
-            └─ download_image()       → Selenium navigue + Network.getResponseBody CDP
+       └─ process_post(fetcher, ...)  → planifie tous les attachments du post
+            └─ fetcher.fetch_many()   → batch parallèle (fetch JS) ou CDP unitaire
 ```
 
 ### Key implementation details (Klassly)
@@ -138,7 +146,12 @@ main()                                # charge .env + configure logging ici
 - **Auth**: formulaire en une étape (tel + password ensemble) → `button.kr-login-form__btn` ; cookie `klassroom_token` récupéré.
 - **Classes**: extraites du champ `klasses` de `app.connect` capturé via CDP lors de la navigation `/class`.
 - **Posts**: `klass.history` capturé via CDP pendant scroll ; dict keyed par postID avec `attachments` embarqués.
-- **Image download**: `www.klass.ly` et `data.klassroom.co` bloquent Python `requests` (403) mais acceptent Chrome → on navigue avec le driver puis on récupère le corps via `Network.getResponseBody`. URLs normalisées de `data.klassroom.co/img/` vers `www.klass.ly/_data/img/`.
+- **`ImageFetcher` — 3 niveaux de DL** (chaque niveau qui échoue est désactivé pour la session) :
+  1. `requests` Python avec cookies + UA Chrome (rapide mais rejeté par anti-bot 403 sur klass.ly en pratique).
+  2. **`fetch()` JS parallèle** injecté via `execute_async_script` : télécharge N URLs simultanément (concurrency=6) dans le contexte Chrome, encode en base64, renvoie via callback. Au premier 403 CORS (`Failed to fetch`), le driver est navigué une fois vers une URL `www.klass.ly` (`_warm_up_origin`) pour aligner l'origine et rendre les fetch suivants same-origin.
+  3. Fallback CDP : navigation Chrome vers chaque URL + `Network.getResponseBody`.
+- **URL normalization**: `data.klassroom.co/img/` → `www.klass.ly/_data/img/` (le second domaine est servi avec les bons CORS une fois warmé).
+- **Batching par post**: `process_post` calcule d'abord tous les chemins de destination, filtre les fichiers déjà présents, puis fait **un seul `fetch_many`** pour les images manquantes. Plus de boucle séquentielle par image.
 - **Output path**: `DOWNLOAD_DIR` (obligatoire) ; lu dans `main()`. `HEADLESS=false` pour mode visible.
 
 ### Shared

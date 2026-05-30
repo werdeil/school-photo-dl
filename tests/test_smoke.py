@@ -11,9 +11,6 @@ from school_photo_dl.shared.utils import (
     safe_name,
     slugify,
 )
-from school_photo_dl.tma.scraper import _build_image_filename
-
-
 def test_package_importable():
     """Le package doit être importable et exposer __version__."""
     # pylint: disable=import-outside-toplevel  # import testé localement
@@ -81,24 +78,6 @@ def test_slugify_truncates():
     out = slugify(long_text, max_len=40)
     assert len(out) <= 40
     assert not out.endswith("-")
-
-
-def test_build_image_filename_with_full_prefix():
-    """Format nominal : NNN_YYYY-MM-DD_slug.ext, 1-indexé."""
-    name = _build_image_filename("2025-03-15_sortie-musee", 0, "https://x/y/abc.jpg?token=1")
-    assert name == "001_2025-03-15_sortie-musee.jpg"
-    name = _build_image_filename("2025-03-15_sortie-musee", 26, "https://x/y/abc.PNG")
-    assert name == "027_2025-03-15_sortie-musee.png"
-
-
-def test_build_image_filename_without_prefix():
-    """Sans préfixe (titre + date KO), on n'a que l'index et l'extension."""
-    assert _build_image_filename("", 0, "https://x/y/z.jpg") == "001.jpg"
-
-
-def test_build_image_filename_default_extension():
-    """Extension absente de l'URL → .jpg par défaut."""
-    assert _build_image_filename("p", 0, "https://x/y/noext") == "001_p.jpg"
 
 
 def test_build_name_prefix_combines_or_falls_back():
