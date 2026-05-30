@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Purpose
 
 Python scrapers that download photos from two French school photo-sharing platforms:
-- [toutemonannee.com](https://www.toutemonannee.com) — `tma/tma_get_selenium.py`
+- [toutemonannee.com](https://www.toutemonannee.com) — `tma/tma_get.py`
 - [klass.ly](https://fr.klass.ly) — `klassly/klassly_get.py`
 
 Both use Selenium to drive Chrome and save images locally organized by album/class and date.
@@ -40,7 +40,7 @@ Key packages: `selenium==4.33.0`, `requests==2.32.3`, `webdriver-manager==4.0.2`
 ## Running
 
 ```bash
-python3 tma/tma_get_selenium.py     # toutemonannee.com
+python3 tma/tma_get.py     # toutemonannee.com
 python3 klassly/klassly_get.py      # klass.ly
 ```
 
@@ -49,7 +49,7 @@ Klassly downloads to `KLASSLY_DOWNLOAD_DIR`, organized as `{class_name}/{date} -
 
 ## Architecture
 
-### Flow in `tma/tma_get_selenium.py`
+### Flow in `tma/tma_get.py`
 
 ```
 main()
