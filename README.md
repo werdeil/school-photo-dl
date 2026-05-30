@@ -15,8 +15,9 @@ album/classe et date.
 pip install school-photo-dl
 ```
 
-Chrome doit être installé sur la machine. Le pilote ChromeDriver est récupéré
-automatiquement par [webdriver-manager](https://pypi.org/project/webdriver-manager/).
+Python 3.10 ou supérieur. Chrome doit être installé sur la machine. Le pilote
+ChromeDriver est récupéré automatiquement par
+[webdriver-manager](https://pypi.org/project/webdriver-manager/).
 
 ## Configuration
 
@@ -77,16 +78,38 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Construire et publier sur PyPI :
+Publication sur PyPI : pousser un tag `vX.Y.Z` déclenche
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml) (Trusted
+Publisher PyPI, aucun token à gérer).
+
+```bash
+git tag v0.1.0 && git push --tags
+```
+
+Pour un build local (test du paquet avant tag) :
 
 ```bash
 python -m build
-twine upload dist/*
+twine check dist/*
 ```
 
 ## Licence
 
 GPL-3.0-or-later. Voir [LICENSE](LICENSE).
+
+## Soutenez les plateformes
+
+[toutemonannee.com](https://www.toutemonannee.com) et
+[Klassly](https://fr.klass.ly) sont des services qui facilitent le lien entre
+les familles et l'école au quotidien. Leur fonctionnement repose sur des
+équipes qui développent et maintiennent ces outils.
+
+**Si vous appréciez le service rendu, pensez à souscrire aux offres payantes
+proposées par ces plateformes** (albums photo imprimés, abonnements premium,
+etc.). C'est le meilleur moyen de les soutenir et de garantir leur pérennité.
+
+Cet outil n'a pas vocation à se substituer à ces offres mais simplement à vous
+permettre de conserver une copie locale de vos photos.
 
 ## Avertissement
 
